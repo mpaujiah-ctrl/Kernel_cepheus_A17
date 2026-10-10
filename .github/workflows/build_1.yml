@@ -1,0 +1,170 @@
+name: Build Kernel Cepheus A16 EVOX
+on:
+  workflow_dispatch:
+
+env:
+  KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/kernel_xiaomi_cepheus_EVOX"
+  KERNEL_BRANCH: "bka"
+  BASE_DEFCONFIG: "arch/arm64/configs/vendor/sm8150-perf_defconfig"
+  DEVICE_FRAGMENT: "arch/arm64/configs/vendor/xiaomi/cepheus.config"
+  KERNEL_ARCH: "arm64"
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout Kernel Sendiri
+      uses: actions/checkout@v4
+           
+    - name: Clone kernel source (ikut update branch)
+      run: |
+          git clone --depth=1 -b "${{ env.KERNEL_BRANCH }}" "${{ env.KERNEL_SOURCE }}" kernel   
+    
+    - name: Keluarin device andromeda yang dtsi-nya syntax error (bukan device kita, ikut ke-build bareng karena CONFIG_BUILD_ARM64_DT_OVERLAY)
+      working-directory: kernel
+      run: |
+          sed -i '/andromeda-sm8150/d' arch/arm64/boot/dts/qcom/Makefile
+          grep -c "andromeda-sm8150" arch/arm64/boot/dts/qcom/Makefile || echo "[+] andromeda sudah dikeluarkan dari daftar build."
+    
+    - name: Install toolchain (Clang 21 / r563880c - PERSIS sama kayak kernel yang lagi jalan di device)
+      run: |
+          sudo apt update
+          sudo apt install -y bc bison flex libssl-dev libelf-dev build-essential gcc-aarch64-linux-gnu
+
+          echo "=== Download clang-r563880c (AOSP resmi, cocok sama build string kernel yang jalan) via sparse git clone di commit spesifik ==="
+          mkdir -p toolchain
+          git clone --filter=blob:none --sparse --no-checkout https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang_repo
+          cd clang_repo
+          git fetch --depth=1 origin f8439f0628d799092dd07df440a6334cab28939c
+          git checkout FETCH_HEAD
+          git sparse-checkout set clang-r563880c
+          cd ..
+          ls clang_repo/
+          mv clang_repo/clang-r563880c toolchain/clang
+          rm -rf clang_repo
+
+          echo "=== Verifikasi ==="
+          toolchain/clang/bin/clang --version
+
+          echo "TOOLCHAIN_CLANG=$PWD/toolchain/clang/bin" >> "$GITHUB_ENV"
+    
+    - name: Ganti dtc ke versi upstream + fix yamltree
+      working-directory: kernel
+      run: |
+        set -e
+    
+        # 1. Ambil source dtc dari upstream resmi
+        rm -rf /tmp/dtc-upstream
+        git clone --depth=1 "https://github.com/mpaujiah-ctrl/dtc_mainstream" /tmp/dtc-upstream
+    
+        # 2. Timpa file yang namanya cocok di scripts/dtc/
+        for f in scripts/dtc/*.c scripts/dtc/*.h scripts/dtc/*.l scripts/dtc/*.y; do
+          fname=$(basename "$f")
+          if [ -f "/tmp/dtc-upstream/$fname" ]; then
+            cp "/tmp/dtc-upstream/$fname" "$f"
+          fi
+        done
+        rm -rf /tmp/dtc-upstream
+    
+        # 3. Generate ulang lexer & parser (flex/bison sudah tersedia dari step Install toolchain)
+        flex -o scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l
+        bison -d -o scripts/dtc/dtc-parser.tab.c scripts/dtc/dtc-parser.y
+        cp scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.lex.c_shipped
+        cp scripts/dtc/dtc-parser.tab.c scripts/dtc/dtc-parser.tab.c_shipped
+        cp scripts/dtc/dtc-parser.tab.h scripts/dtc/dtc-parser.tab.h_shipped
+    
+        # 4. Stub yamltree.c (dtc.c upstream manggil dt_to_yaml, kernel lama nggak punya file ini)
+        cat > scripts/dtc/yamltree.c << 'CEOF'
+        #include <stdio.h>
+        #include <stdlib.h>
+    
+        struct dt_info;
+    
+        void dt_to_yaml(FILE *outf, struct dt_info *dti) {}
+        CEOF
+    
+        # 5. Daftarkan yamltree.o supaya ikut ke-compile & ke-link
+        sed -i 's/srcpos\.o checks\.o util\.o/srcpos.o checks.o util.o yamltree.o/' scripts/dtc/Makefile
+        grep -A1 "dtc-objs" scripts/dtc/Makefile
+       
+    - name: Merge defconfig (persis seperti ROM)
+      working-directory: kernel
+      run: |
+          export ARCH=arm64
+          mkdir -p out
+          scripts/kconfig/merge_config.sh -O out \
+            arch/arm64/configs/vendor/sm8150-perf_defconfig \
+            arch/arm64/configs/vendor/xiaomi/cepheus.config \
+            arch/arm64/configs/vendor/xiaomi/sm8150-common.config
+          make O=out ARCH=arm64 olddefconfig
+          grep -E "^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|INITRAMFS_IGNORE_SKIP_FLAG|EROFS_FS|QCA_CLD_WLAN|LTO_NONE)=|^CONFIG_CMDLINE=" out/.config
+    
+    - name: Dump config SND final
+      working-directory: kernel
+      run: |
+          grep -E "^CONFIG_SND|^# CONFIG_SND.*is not set" out/.config > ../snd_final_$(basename $GITHUB_WORKFLOW | tr ' ' '_').txt
+          cat ../snd_final_*.txt
+    
+    - name: Update localversion
+      working-directory: kernel
+      run: |
+          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-EVOX"/' out/.config
+          grep "CONFIG_LOCALVERSION" out/.config
+    
+    - name: Clone AnyKernel3
+      run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          echo "=== Ganti anykernel.sh & ak3-core.sh bawaan (generic, buat OMAP/tuna) dengan punya InfiniR (proven working buat cepheus) ==="
+          cp anykernel.sh AnyKernel3/anykernel.sh
+          cp ak3-core.sh AnyKernel3/tools/ak3-core.sh
+          cat AnyKernel3/anykernel.sh    
+    
+    - name: Matikan LTO total
+      working-directory: kernel
+      run: |
+          scripts/config --file out/.config \
+            -d LTO_CLANG -d CFI_CLANG -d CFI_CLANG_SHADOW \
+            --set-val LTO_NONE y
+          make O=out ARCH=arm64 olddefconfig      
+  
+    - name: Build kernel
+      working-directory: kernel
+      run: |
+          export PATH="$TOOLCHAIN_CLANG:$PATH"
+          export ARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+
+          make O=out ARCH=arm64 olddefconfig
+          make ARCH=arm64 O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+               LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+               -j"$(nproc --all)" Image.gz-dtb
+               
+          ls out/arch/arm64/boot/Image.gz-dtb
+          ls out/arch/arm64/boot/Image   
+   
+    - name: Pack AnyKernel3
+      run: |
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3 && zip -r9 ../cepheus_evox.zip * -x README
+
+    - name: Upload config dump
+      uses: actions/upload-artifact@v4
+      with:
+          name: snd-config-dump
+          path: snd_final_*.txt
+    
+    - name: Upload hasil build
+      uses: actions/upload-artifact@v4
+      with:
+          name: cepheus-evox
+          path: |
+            cepheus_evox.zip

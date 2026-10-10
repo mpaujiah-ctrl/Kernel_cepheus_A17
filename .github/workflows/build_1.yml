@@ -1,12 +1,13 @@
-name: Build Kernel Cepheus A16 EVOX
+name: Build Kernel Cepheus A17 EVOX
 on:
   workflow_dispatch:
 
 env:
   KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/kernel_xiaomi_cepheus_EVOX"
-  KERNEL_BRANCH: "bka"
+  KERNEL_BRANCH: "cnb"
   BASE_DEFCONFIG: "arch/arm64/configs/vendor/sm8150-perf_defconfig"
   DEVICE_FRAGMENT: "arch/arm64/configs/vendor/xiaomi/cepheus.config"
+  COMMON_FRAGMENT: "arch/arm64/configs/vendor/xiaomi/sm8150-common.config"
   KERNEL_ARCH: "arm64"
 
 jobs:
@@ -94,22 +95,16 @@ jobs:
           export ARCH=arm64
           mkdir -p out
           scripts/kconfig/merge_config.sh -O out \
-            arch/arm64/configs/vendor/sm8150-perf_defconfig \
-            arch/arm64/configs/vendor/xiaomi/cepheus.config \
-            arch/arm64/configs/vendor/xiaomi/sm8150-common.config
+            "$BASE_DEFCONFIG" \
+            "$DEVICE_FRAGMENT" \
+            "$COMMON_FRAGMENT"
           make O=out ARCH=arm64 olddefconfig
           grep -E "^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|INITRAMFS_IGNORE_SKIP_FLAG|EROFS_FS|QCA_CLD_WLAN|LTO_NONE)=|^CONFIG_CMDLINE=" out/.config
-    
-    - name: Dump config SND final
-      working-directory: kernel
-      run: |
-          grep -E "^CONFIG_SND|^# CONFIG_SND.*is not set" out/.config > ../snd_final_$(basename $GITHUB_WORKFLOW | tr ' ' '_').txt
-          cat ../snd_final_*.txt
-    
+       
     - name: Update localversion
       working-directory: kernel
       run: |
-          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-EVOX"/' out/.config
+          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-EVOX-cnb"/' out/.config
           grep "CONFIG_LOCALVERSION" out/.config
     
     - name: Clone AnyKernel3
@@ -154,7 +149,7 @@ jobs:
     - name: Pack AnyKernel3
       run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../cepheus_evox.zip * -x README
+          cd AnyKernel3 && zip -r9 ../cepheus_A17_evox.zip * -x README
 
     - name: Upload config dump
       uses: actions/upload-artifact@v4
@@ -165,6 +160,6 @@ jobs:
     - name: Upload hasil build
       uses: actions/upload-artifact@v4
       with:
-          name: cepheus-evox
+          name: cepheus-A17-evox
           path: |
-            cepheus_evox.zip
+            cepheus_A17_evox.zip

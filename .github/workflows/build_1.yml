@@ -1,10 +1,11 @@
-name: Build Kernel Cepheus A17 EVOX
+name: Build Kernel Cepheus A17 crdroid
+
 on:
   workflow_dispatch:
 
 env:
-  KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/kernel_xiaomi_cepheus_EVOX"
-  KERNEL_BRANCH: "cnb"
+  KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_crdroid"
+  KERNEL_BRANCH: "17.0-exp"
   BASE_DEFCONFIG: "arch/arm64/configs/vendor/sm8150-perf_defconfig"
   DEVICE_FRAGMENT: "arch/arm64/configs/vendor/xiaomi/cepheus.config"
   COMMON_FRAGMENT: "arch/arm64/configs/vendor/xiaomi/sm8150-common.config"
@@ -17,17 +18,11 @@ jobs:
     steps:
     - name: Checkout Kernel Sendiri
       uses: actions/checkout@v4
-           
-    - name: Clone kernel source (ikut update branch)
-      run: |
-          git clone --depth=1 -b "${{ env.KERNEL_BRANCH }}" "${{ env.KERNEL_SOURCE }}" kernel   
     
-    - name: Keluarin device andromeda yang dtsi-nya syntax error (bukan device kita, ikut ke-build bareng karena CONFIG_BUILD_ARM64_DT_OVERLAY)
-      working-directory: kernel
+    - name: Clone kernel source
       run: |
-          sed -i '/andromeda-sm8150/d' arch/arm64/boot/dts/qcom/Makefile
-          grep -c "andromeda-sm8150" arch/arm64/boot/dts/qcom/Makefile || echo "[+] andromeda sudah dikeluarkan dari daftar build."
-    
+          git clone --depth=1 -b "${{ env.KERNEL_BRANCH }}" "${{ env.KERNEL_SOURCE }}" kernel
+         
     - name: Install toolchain (Clang 21 / r563880c - PERSIS sama kayak kernel yang lagi jalan di device)
       run: |
           sudo apt update
@@ -48,7 +43,7 @@ jobs:
           echo "=== Verifikasi ==="
           toolchain/clang/bin/clang --version
 
-          echo "TOOLCHAIN_CLANG=$PWD/toolchain/clang/bin" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_CLANG=$PWD/toolchain/clang/bin" >> "$GITHUB_ENV" 
     
     - name: Ganti dtc ke versi upstream + fix yamltree
       working-directory: kernel
@@ -87,8 +82,8 @@ jobs:
     
         # 5. Daftarkan yamltree.o supaya ikut ke-compile & ke-link
         sed -i 's/srcpos\.o checks\.o util\.o/srcpos.o checks.o util.o yamltree.o/' scripts/dtc/Makefile
-        grep -A1 "dtc-objs" scripts/dtc/Makefile
-       
+        grep -A1 "dtc-objs" scripts/dtc/Makefile 
+    
     - name: Merge defconfig (persis seperti ROM)
       working-directory: kernel
       run: |
@@ -99,30 +94,30 @@ jobs:
             "$DEVICE_FRAGMENT" \
             "$COMMON_FRAGMENT"
           make O=out ARCH=arm64 olddefconfig
-          grep -E "^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_SUSFS|INITRAMFS_IGNORE_SKIP_FLAG|EROFS_FS|QCA_CLD_WLAN|LTO_NONE)=|^CONFIG_CMDLINE=" out/.config
-       
+          grep -E "^CONFIG_(SND_SOC_TAS256X|TAS256X_REGMAP|TAS25XX_ALGO|TAS256X_CODEC|INITRAMFS_IGNORE_SKIP_FLAG|EROFS_FS|QCA_CLD_WLAN|SDCARD_FS|LTO_NONE)=|^CONFIG_CMDLINE=" out/.config
+    
     - name: Update localversion
       working-directory: kernel
       run: |
-          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-EVOX-cnb"/' out/.config
+          sed -i 's/CONFIG_LOCALVERSION=".*"/CONFIG_LOCALVERSION="-DRAGON"/' out/.config
           grep "CONFIG_LOCALVERSION" out/.config
     
     - name: Clone AnyKernel3
       run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          echo "=== Ganti anykernel.sh & ak3-core.sh bawaan (generic, buat OMAP/tuna) dengan punya InfiniR (proven working buat cepheus) ==="
+          echo "=== Ganti anykernel.sh & ak3-core.sh ==="
           cp anykernel.sh AnyKernel3/anykernel.sh
           cp ak3-core.sh AnyKernel3/tools/ak3-core.sh
-          cat AnyKernel3/anykernel.sh    
+          cat AnyKernel3/anykernel.sh
     
     - name: Matikan LTO total
       working-directory: kernel
       run: |
-          scripts/config --file out/.config \
-            -d LTO_CLANG -d CFI_CLANG -d CFI_CLANG_SHADOW \
-            --set-val LTO_NONE y
-          make O=out ARCH=arm64 olddefconfig      
-  
+        scripts/config --file out/.config \
+          -d LTO_CLANG -d CFI_CLANG -d CFI_CLANG_SHADOW \
+          --set-val LTO_NONE y
+          make O=out ARCH=arm64 olddefconfig
+           
     - name: Build kernel
       working-directory: kernel
       run: |
@@ -138,28 +133,20 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          make O=out ARCH=arm64 olddefconfig
           make ARCH=arm64 O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
                LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
                -j"$(nproc --all)" Image.gz-dtb
-               
-          ls out/arch/arm64/boot/Image.gz-dtb
-          ls out/arch/arm64/boot/Image   
-   
+
+          ls -l out/arch/arm64/boot/Image
+    
     - name: Pack AnyKernel3
       run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../cepheus_A17_evox.zip * -x README
+          cd AnyKernel3 && zip -r9 ../cepheus_A17_crdroid.zip * -x README
 
-    - name: Upload config dump
-      uses: actions/upload-artifact@v4
-      with:
-          name: snd-config-dump
-          path: snd_final_*.txt
-    
     - name: Upload hasil build
       uses: actions/upload-artifact@v4
       with:
-          name: cepheus-A17-evox
+          name: cepheus-A17-crdroid
           path: |
-            cepheus_A17_evox.zip
+            cepheus_A17_crdroid.zip 
